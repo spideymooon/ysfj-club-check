@@ -1,0 +1,71 @@
+# 有赞每日自动签到 - 极空间 NAS / Docker Compose
+#
+# 使用前：
+#   cp .env.example .env   然后把 PUSHPLUS_TOKEN 等填进 .env
+#   mkdir -p data
+#   docker compose up -d --build checkin
+#
+# 首次登录 / 登录失效后重新登录（按需启动，用完关闭）：
+#   docker compose stop checkin
+#   docker compose --profile login up login      # 浏览器打开 http://<NAS_IP>:6080/vnc.html
+#   docker compose stop login
+#   docker compose start checkin
+#
+# 注意：两个服务共用同一个浏览器 Profile 目录，绝不能同时运行（Profile 会被锁）。
+
+services:
+  # 主服务：每日 08:00（北京时间）自动签到，无头运行
+  checkin:
+    build: .
+    image: youzan-checkin:latest
+    container_name: youzan-checkin
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /app/data
+      HEADLESS: "true"
+      # Docker 内使用镜像自带 Chromium，强制覆盖本地 .env 中可能配置的 chrome
+      BROWSER_CHANNEL: ""
+    volumes:
+      - ./data:/app/data
+    command: ["serve"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.config import Config; from app.db import health; import sys; sys.exit(0 if health(Config.load()) else 1)"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 按需服务：带 noVNC 的有头浏览器，用于人工登录 / 重新登录
+  login:
+    build: .
+    image: youzan-checkin:latest
+    container_name: youzan-checkin-login
+    profiles: ["login"]
+    restart: "no"
+    stop_grace_period: 10s
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /app/data
+      HEADLESS: "false"
+      DISPLAY: ":99"
+      LOGIN_WAIT_SECONDS: "900"
+      BROWSER_CHANNEL: ""
+      # 可选：为 noVNC 设置密码（不填则无密码，仅限内网使用）
+      # VNC_PASSWORD: "change-me"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "6080:6080"
+    entrypoint: ["/app/scripts/start_login.sh"]
+    command: ["login"]

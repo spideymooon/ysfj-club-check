@@ -1,0 +1,8 @@
+# 有赞每日自动签到（Python + Playwright）
+# 所有凭证均通过环境变量 / .env 提供，本文件不含任何敏感信息。
+
+playwright==1.49.1
+APScheduler>=3.10.4,<4
+python-dotenv>=1.0.1
+requests>=2.31.0
+tzdata>=2024.1

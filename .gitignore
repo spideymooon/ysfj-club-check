@@ -1,0 +1,41 @@
+# ---- 凭证 / 个人配置（严禁提交）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- 浏览器持久化 Profile（严禁提交，含登录 Cookie）----
+data/
+browser_profile/
+profile/
+user_data/
+captured_request.json
+
+# ---- 运行期数据 ----
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- WorkBuddy 工作区内部数据（不提交）----
+.workbuddy/
