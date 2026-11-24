@@ -69,6 +69,13 @@ class BrowserSession:
         except Exception:
             return ""
 
+    def is_alive(self) -> bool:
+        """浏览器窗口是否仍然打开（用户手动关窗后返回 False）。"""
+        try:
+            return bool(self.context is not None and self.context.pages)
+        except Exception:
+            return False
+
     def close(self) -> None:
         try:
             if self.context is not None:
@@ -96,8 +103,13 @@ def is_login_page(url: str) -> bool:
     return False
 
 
-# 未登录（游客）态实测只有这两个 Cookie
-GUEST_COOKIE_NAMES = {"kdtsessionid", "nobody_sign"}
+# 未登录（游客）态实测会种下这些站点 Cookie（2026-11-24 从真实 Profile 读取）。
+# 只要登录页/风控页会写入的 Cookie 都在这里，就不会被误判成「已登录」。
+GUEST_COOKIE_NAMES = {
+    "kdtsessionid", "nobody_sign", "_kdt_id_", "dfp", "yz_fp_hash",
+    "yz_log_ftime", "yz_log_seqb", "yz_log_seqn", "yz_log_uuid",
+    "acw_tc", "ec", "_efmdata", "_exid", "yz_mt", "yz_uid_",
+}
 
 
 def _has_login_cookie(context: BrowserContext) -> bool:
@@ -143,6 +155,30 @@ def looks_logged_in(context: BrowserContext) -> bool:
     return _has_login_cookie(context)
 
 
+def verify_login_by_request(cfg: Config, context: BrowserContext) -> bool:
+    """
+    用 HTTP 层做权威登录校验（无副作用）：
+
+    结果页在未登录时会被 302 到 passport.youzan.com/login，登录后则 200 留在
+    club.ysjf.com。因此只要看「跟随跳转后的最终 URL 落在哪里」即可判断，
+    不再依赖 Cookie 名称猜测 —— 登录页本身也会写入一批游客 Cookie，靠 Cookie
+    判断会把「刚打开的登录页」误判成「已登录」。
+    """
+    try:
+        resp = context.request.get(
+            cfg.result_page,
+            timeout=cfg.request_timeout * 1000,
+            max_redirects=10,
+        )
+        final_url = (resp.url or "").lower()
+        if "passport.youzan.com" in final_url or "/login" in final_url:
+            return False
+        return resp.status == 200 and bool(final_url)
+    except Exception as exc:
+        log.info("登录校验请求异常（忽略本次，继续等待）：%s", type(exc).__name__)
+        return False
+
+
 def do_login(cfg: Config, headless: bool = False) -> bool:
     """有头浏览器人工登录；成功后保存 Profile 并解除暂停状态。"""
     db.init_db(cfg)
@@ -161,8 +197,8 @@ def do_login(cfg: Config, headless: bool = False) -> bool:
 
         print("=" * 68)
         print("  请在打开的浏览器中完成登录（手机号 + 短信验证码）")
-        print("  登录成功后页面会跳回 club.ysjf.com，程序会自动检测并保存登录态。")
-        print(f"  最长等待 {cfg.login_wait_seconds} 秒，期间请勿关闭浏览器窗口。")
+        print("  窗口不会自动关闭：登录成功后程序会校验登录态，再自动关闭窗口。")
+        print(f"  最长等待 {cfg.login_wait_seconds} 秒；中途关掉窗口则本次登录作废。")
         print("=" * 68)
 
         try:
@@ -177,15 +213,36 @@ def do_login(cfg: Config, headless: bool = False) -> bool:
             log.info("当前 URL 不在登录页，可能已存在有效登录态")
 
         deadline = time.time() + cfg.login_wait_seconds
+        started = time.time()
         ok = False
+        hits = 0
+        last_hint = 0.0
+        min_guard = 8.0          # 窗口至少保留 8 秒，绝不「一闪而过」
+        interval = 3.0           # 每 3 秒做一次 HTTP 层登录校验
+        print("[i] 登录窗口会一直保留，直到你完成手机号 + 短信验证码登录。")
         while time.time() < deadline:
-            if looks_logged_in(context):
-                # 再给页面一点时间完成跳转，避免登录过程中的中间态
-                time.sleep(2)
-                if looks_logged_in(context):
-                    ok = True
-                    break
-            time.sleep(2)
+            time.sleep(interval)
+            if not session.is_alive():
+                log.warning("浏览器窗口已被手动关闭，结束本次登录流程")
+                break
+            if verify_login_by_request(cfg, context):
+                hits += 1
+                log.info("登录校验通过（连续第 %s 次确认）", hits)
+            else:
+                hits = 0
+            if hits >= 2 and time.time() - started >= min_guard:
+                ok = True
+                break
+            elapsed = time.time() - started
+            if elapsed - last_hint >= 30:
+                last_hint = elapsed
+                current = ""
+                try:
+                    current = page.url or ""
+                except Exception:
+                    pass
+                log.info("仍在等待登录…（已等待 %ss，当前页面=%s）",
+                         int(elapsed), current[:90])
 
         if not ok:
             log.error("等待登录超时，未检测到登录成功，Profile 可能仍为未登录状态")
